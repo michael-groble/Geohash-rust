@@ -101,6 +101,13 @@ fn binary_precision(precision: &Precision) -> u8 {
     }
 }
 
+fn character_precision(precision: &Precision) -> u8 {
+    match precision {
+        &Precision::Bits(n) => (0.4 * n as f64) as u8,
+        &Precision::Characters(n) => n
+    }
+}
+
 fn max_binary_value(binary_precision: u8) -> f64 {
     (1 << binary_precision as u64) as f64
 }
@@ -116,8 +123,28 @@ fn bits_to_float(bits: u32, range: &LocationRange, max_binary_value: f64) -> f64
 }
 
 fn interleave_bits(even_bits: u32, odd_bits: u32) -> u64 {
-    (even_bits + odd_bits) as u64
+    let mut e = even_bits as u64;
+    let mut o = odd_bits as u64;
+
+    e = (e | (e << 16)) & 0x0000FFFF0000FFFF;
+    o = (o | (o << 16)) & 0x0000FFFF0000FFFF;
+
+    e = (e | (e <<  8)) & 0x00FF00FF00FF00FF;
+    o = (o | (o <<  8)) & 0x00FF00FF00FF00FF;
+
+    e = (e | (e <<  4)) & 0x0F0F0F0F0F0F0F0F;
+    o = (o | (o <<  4)) & 0x0F0F0F0F0F0F0F0F;
+
+    e = (e | (e <<  2)) & 0x3333333333333333;
+    o = (o | (o <<  2)) & 0x3333333333333333;
+
+    e = (e | (e <<  1)) & 0x5555555555555555;
+    o = (o | (o <<  1)) & 0x5555555555555555;
+
+    e | (o << 1)
 }
+
+const BASE32_CHARACTERS: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 
 impl GeohashBits {
 
@@ -135,6 +162,18 @@ impl GeohashBits {
             precision
         }
     }
+
+    pub fn hash(&self) -> String {
+        let character_precision = character_precision(&self.precision);
+        let total_binary_precision = 2 * binary_precision(&self.precision);
+        let mut hash = String::with_capacity(character_precision as usize);
+        for i in 1..=character_precision {
+            // each character is 5 bits
+            let index = (self.bits >> (total_binary_precision - i * 5) as u64) & 0x1f;
+            hash.push(char::from(BASE32_CHARACTERS[index as usize]));
+        }
+        hash
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +181,8 @@ mod tests {
     use assert_approx_eq::assert_approx_eq;
     use crate::Location;
     use crate::BoundingBox;
+    use crate::Precision;
+    use crate::GeohashBits;
 
     #[test]
     fn test_distance() {
@@ -196,5 +237,29 @@ mod tests {
             &Location {latitude: 3.0, longitude: 4.0 }
         );
         assert_eq!(other.intersects(&bbox()), false);
+    }
+
+    #[test]
+    fn test_even_string_encoding() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(12));
+        assert_eq!(bits.hash(), "gcpuvxr1jzfd");
+    }
+
+    #[test]
+    fn test_odd_string_encoding() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(11));
+        assert_eq!(bits.hash(), "gcpuvxr1jzf");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_encoding_too_long() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(13));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_angle() {
+        let bits = GeohashBits::from_location(&Location {longitude: -200.0, latitude: 51.5}, Precision::Characters(11));
     }
 }
