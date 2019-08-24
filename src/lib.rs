@@ -1,4 +1,7 @@
 use std::f64;
+use std::f64::MAX;
+use lazy_static::lazy_static;
+use std::collections::HashMap;
 
 pub struct Location {
     pub longitude: f64,
@@ -10,10 +13,29 @@ pub struct BoundingBox {
     max: Location
 }
 
+#[derive(Clone, Copy)]
+pub enum Precision {
+    Bits(u8),
+    Characters(u8)
+}
+
+pub struct GeohashBits {
+    bits: u64,
+    precision: Precision
+}
+
 const RADIANS_PER_DEGREE: f64 = std::f64::consts::PI / 180.0;
 const EARTH_DISTANCE_METERS: f64 = 2.0 * 6_371_000.0;
+type LocationRange = std::ops::RangeInclusive<f64>;
+const LONGITUDE_RANGE: LocationRange = (-180.0..=180.0);
+const LATITUDE_RANGE: LocationRange = (-90.0..=90.0);
 
 impl Location {
+    pub fn validate_range(&self) {
+        assert!(LONGITUDE_RANGE.contains(&self.longitude), "longitude out of range");
+        assert!(LATITUDE_RANGE.contains(&self.latitude), "latitude out of range");
+    }
+
     pub fn distance_in_meters(&self, to: &Location) -> f64 {
         let self_lat = RADIANS_PER_DEGREE * self.latitude;
         let to_lat   = RADIANS_PER_DEGREE * to.latitude;
@@ -31,6 +53,8 @@ impl Location {
 
 impl BoundingBox {
     pub fn enclosing(a: &Location, b: &Location) -> BoundingBox {
+        a.validate_range();
+        b.validate_range();
         BoundingBox {
             min: Location {
                 latitude: a.latitude.min(b.latitude),
@@ -70,11 +94,167 @@ impl BoundingBox {
     }
 }
 
+const MAX_BINARY_PRECISION: u8 = 32;
+
+fn binary_precision(precision: &Precision) -> u8 {
+    match precision {
+        &Precision::Bits(n) => n,
+        &Precision::Characters(n) => (0.5 * (5 * n) as f32).ceil() as u8
+    }
+}
+
+fn character_precision(precision: &Precision) -> u8 {
+    match precision {
+        &Precision::Bits(n) => (0.4 * n as f64) as u8,
+        &Precision::Characters(n) => n
+    }
+}
+
+fn max_binary_value(binary_precision: u8) -> f64 {
+    (1 << binary_precision as u64) as f64
+}
+
+fn float_to_bits(value: f64, range: &LocationRange, max_binary_value: f64) -> u32 {
+    let fraction = (value - *range.start()) / (range.end() - range.start());
+    (fraction * max_binary_value) as u32
+}
+
+fn bits_to_float(bits: u32, range: &LocationRange, max_binary_value: f64) -> f64 {
+    let fraction = (bits as f64) / max_binary_value;
+    *range.start() + fraction * (range.end() - range.start())
+}
+
+fn interleave_bits(even_bits: u32, odd_bits: u32) -> u64 {
+    let mut e = even_bits as u64;
+    let mut o = odd_bits as u64;
+
+    e = (e | (e << 16)) & 0x0000FFFF0000FFFF;
+    o = (o | (o << 16)) & 0x0000FFFF0000FFFF;
+
+    e = (e | (e <<  8)) & 0x00FF00FF00FF00FF;
+    o = (o | (o <<  8)) & 0x00FF00FF00FF00FF;
+
+    e = (e | (e <<  4)) & 0x0F0F0F0F0F0F0F0F;
+    o = (o | (o <<  4)) & 0x0F0F0F0F0F0F0F0F;
+
+    e = (e | (e <<  2)) & 0x3333333333333333;
+    o = (o | (o <<  2)) & 0x3333333333333333;
+
+    e = (e | (e <<  1)) & 0x5555555555555555;
+    o = (o | (o <<  1)) & 0x5555555555555555;
+
+    e | (o << 1)
+}
+
+fn deinterleave_bits(interleaved: u64) -> (u32, u32) {
+    let mut e = interleaved        & 0x5555555555555555;
+    let mut o = (interleaved >> 1) & 0x5555555555555555;
+
+    e = (e | (e >>  1)) & 0x3333333333333333;
+    o = (o | (o >>  1)) & 0x3333333333333333;
+
+    e = (e | (e >>  2)) & 0x0F0F0F0F0F0F0F0F;
+    o = (o | (o >>  2)) & 0x0F0F0F0F0F0F0F0F;
+
+    e = (e | (e >>  4)) & 0x00FF00FF00FF00FF;
+    o = (o | (o >>  4)) & 0x00FF00FF00FF00FF;
+
+    e = (e | (e >>  8)) & 0x0000FFFF0000FFFF;
+    o = (o | (o >>  8)) & 0x0000FFFF0000FFFF;
+
+    e = (e | (e >> 16)) & 0x00000000FFFFFFFF;
+    o = (o | (o >> 16)) & 0x00000000FFFFFFFF;
+
+    (e as u32, o as u32)
+}
+
+const BASE32_CHARACTERS: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+
+lazy_static! {
+    static ref BASE32_BITS: HashMap<char, u64> = {
+        let mut map = HashMap::new();
+        for (i, c) in BASE32_CHARACTERS.iter().enumerate() {
+            map.insert(char::from(*c), i as u64);
+        }
+        map
+    };
+}
+
+impl GeohashBits {
+
+    pub fn from_location(location: &Location, precision: Precision) -> GeohashBits {
+        location.validate_range();
+        let binary_precision = binary_precision(&precision);
+        assert!((1..=MAX_BINARY_PRECISION).contains(&binary_precision), "precision out of range");
+        let max_binary_value = max_binary_value(binary_precision);
+
+        let longitude_bits = float_to_bits(location.longitude, &LONGITUDE_RANGE, max_binary_value);
+        let latitude_bits  = float_to_bits(location.latitude, &LATITUDE_RANGE, max_binary_value);
+
+        GeohashBits {
+            bits: interleave_bits(latitude_bits, longitude_bits),
+            precision
+        }
+    }
+
+    pub fn from_hash(hash: &str) -> GeohashBits {
+        let total_bit_length = 2 * (0.5 * 5.0 * hash.len() as f64).ceil() as u64;
+        let mut bits: u64 = 0;
+        for (i, c) in hash.chars().enumerate() {
+            bits |= (BASE32_BITS[&c] << (total_bit_length - 5 * (i as u64 + 1)));
+        }
+        GeohashBits {
+            bits,
+            precision: Precision::Characters(hash.len() as u8)
+        }
+    }
+
+    pub fn hash(&self) -> String {
+        let character_precision = character_precision(&self.precision);
+        let total_binary_precision = 2 * binary_precision(&self.precision);
+        let mut hash = String::with_capacity(character_precision as usize);
+        for i in 1..=character_precision {
+            // each character is 5 bits
+            let index = (self.bits >> (total_binary_precision - i * 5) as u64) & 0x1f;
+            hash.push(char::from(BASE32_CHARACTERS[index as usize]));
+        }
+        hash
+    }
+
+    pub fn bits(&self) -> u64 {
+        self.bits
+    }
+
+    pub fn bounding_box(&self) -> BoundingBox {
+        let (mut lat_bits, lon_bits) = deinterleave_bits(self.bits);
+        let binary_precision = binary_precision(&self.precision);
+        let mut lat_precision = binary_precision;
+        if let Precision::Characters(_) = self.precision {
+            if (binary_precision % 5) > 0 {
+                lat_bits >>= 1;
+                lat_precision -= 1;
+            }
+        }
+        BoundingBox {
+            min: Location {
+                longitude: bits_to_float(lon_bits, &LONGITUDE_RANGE, max_binary_value(binary_precision)),
+                latitude:  bits_to_float(lat_bits, &LATITUDE_RANGE, max_binary_value(lat_precision))
+            },
+            max: Location {
+                longitude: bits_to_float(lon_bits + 1, &LONGITUDE_RANGE, max_binary_value(binary_precision)),
+                latitude:  bits_to_float(lat_bits + 1, &LATITUDE_RANGE, max_binary_value(lat_precision))
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use assert_approx_eq::assert_approx_eq;
     use crate::Location;
     use crate::BoundingBox;
+    use crate::Precision;
+    use crate::GeohashBits;
 
     #[test]
     fn test_distance() {
@@ -82,6 +262,12 @@ mod tests {
         let b = Location { longitude: -9.11, latitude: 51.6 };
 
         assert_approx_eq!(a.distance_in_meters(&b), 11140.9, 0.1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_validate_range() {
+        Location { longitude: 181.0, latitude: 0.0 }.validate_range();
     }
 
     fn bbox() -> BoundingBox {
@@ -123,5 +309,64 @@ mod tests {
             &Location {latitude: 3.0, longitude: 4.0 }
         );
         assert_eq!(other.intersects(&bbox()), false);
+    }
+
+    #[test]
+    fn test_even_string_encoding() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(12));
+        assert_eq!(bits.hash(), "gcpuvxr1jzfd");
+    }
+
+    #[test]
+    fn test_odd_string_encoding() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(11));
+        assert_eq!(bits.hash(), "gcpuvxr1jzf");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_encoding_too_long() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(13));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_invalid_angle() {
+        let bits = GeohashBits::from_location(&Location {longitude: -200.0, latitude: 51.5}, Precision::Characters(11));
+    }
+
+    #[test]
+    fn test_even_string_decoding() {
+        let bits = GeohashBits::from_hash("u10hfr2c4pv6");
+        assert_eq!(bits.bits(), 0xd041075c4b25766);
+        assert_approx_eq!(bits.bounding_box().center().longitude, 0.0999999605119228, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude, 51.500000031665,     1.0e-13);
+    }
+
+    #[test]
+    fn test_odd_string_decoding() {
+        let bits = GeohashBits::from_hash("u10hfr2c4pv");
+        assert_eq!(bits.bits(), 0xd041075c4b2576);
+        assert_approx_eq!(bits.bounding_box().center().longitude, 0.100000128149986, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude, 51.5000002831221,   1.0e-13);
+    }
+
+    #[test]
+    fn test_even_binary_encoding() {
+        // match redis precision for comparison
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Bits(26));
+        // note redis always returns 11 character hashes "gcpuvxr1jz0",
+        // but we would need 55 bits for 11 characters and we only have 52 so we truncate at 10 characters
+        assert_eq!(bits.hash(), "gcpuvxr1jz");
+        assert_approx_eq!(bits.bounding_box().center().longitude, -0.10000079870223999, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude,  51.4999996125698,     1.0e-13);
+    }
+
+    #[test]
+    fn test_odd_binary_encoding() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Bits(25));
+        assert_eq!(bits.hash(), "gcpuvxr1jz");
+        assert_approx_eq!(bits.bounding_box().center().longitude, -0.0999981164932251, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude,  51.4999982714653,    1.0e-13);
     }
 }
