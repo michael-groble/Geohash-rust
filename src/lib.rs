@@ -146,6 +146,28 @@ fn interleave_bits(even_bits: u32, odd_bits: u32) -> u64 {
     e | (o << 1)
 }
 
+fn deinterleave_bits(interleaved: u64) -> (u32, u32) {
+    let mut e = interleaved        & 0x5555555555555555;
+    let mut o = (interleaved >> 1) & 0x5555555555555555;
+
+    e = (e | (e >>  1)) & 0x3333333333333333;
+    o = (o | (o >>  1)) & 0x3333333333333333;
+
+    e = (e | (e >>  2)) & 0x0F0F0F0F0F0F0F0F;
+    o = (o | (o >>  2)) & 0x0F0F0F0F0F0F0F0F;
+
+    e = (e | (e >>  4)) & 0x00FF00FF00FF00FF;
+    o = (o | (o >>  4)) & 0x00FF00FF00FF00FF;
+
+    e = (e | (e >>  8)) & 0x0000FFFF0000FFFF;
+    o = (o | (o >>  8)) & 0x0000FFFF0000FFFF;
+
+    e = (e | (e >> 16)) & 0x00000000FFFFFFFF;
+    o = (o | (o >> 16)) & 0x00000000FFFFFFFF;
+
+    (e as u32, o as u32)
+}
+
 const BASE32_CHARACTERS: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 
 lazy_static! {
@@ -201,6 +223,28 @@ impl GeohashBits {
 
     pub fn bits(&self) -> u64 {
         self.bits
+    }
+
+    pub fn bounding_box(&self) -> BoundingBox {
+        let (mut lat_bits, lon_bits) = deinterleave_bits(self.bits);
+        let binary_precision = binary_precision(&self.precision);
+        let mut lat_precision = binary_precision;
+        if let Precision::Characters(_) = self.precision {
+            if (binary_precision % 5) > 0 {
+                lat_bits >>= 1;
+                lat_precision -= 1;
+            }
+        }
+        BoundingBox {
+            min: Location {
+                longitude: bits_to_float(lon_bits, &LONGITUDE_RANGE, max_binary_value(binary_precision)),
+                latitude:  bits_to_float(lat_bits, &LATITUDE_RANGE, max_binary_value(lat_precision))
+            },
+            max: Location {
+                longitude: bits_to_float(lon_bits + 1, &LONGITUDE_RANGE, max_binary_value(binary_precision)),
+                latitude:  bits_to_float(lat_bits + 1, &LATITUDE_RANGE, max_binary_value(lat_precision))
+            },
+        }
     }
 }
 
@@ -295,11 +339,15 @@ mod tests {
     fn test_even_string_decoding() {
         let bits = GeohashBits::from_hash("u10hfr2c4pv6");
         assert_eq!(bits.bits(), 0xd041075c4b25766);
+        assert_approx_eq!(bits.bounding_box().center().longitude,  0.0999999605119228, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude,  51.500000031665,     1.0e-13);
     }
 
     #[test]
     fn test_odd_string_decoding() {
         let bits = GeohashBits::from_hash("u10hfr2c4pv");
         assert_eq!(bits.bits(), 0xd041075c4b2576);
+        assert_approx_eq!(bits.bounding_box().center().longitude,   0.100000128149986, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude,  51.5000002831221,     1.0e-13);
     }
 }
