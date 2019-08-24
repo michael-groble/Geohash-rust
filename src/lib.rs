@@ -339,15 +339,34 @@ mod tests {
     fn test_even_string_decoding() {
         let bits = GeohashBits::from_hash("u10hfr2c4pv6");
         assert_eq!(bits.bits(), 0xd041075c4b25766);
-        assert_approx_eq!(bits.bounding_box().center().longitude,  0.0999999605119228, 1.0e-13);
-        assert_approx_eq!(bits.bounding_box().center().latitude,  51.500000031665,     1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().longitude, 0.0999999605119228, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude, 51.500000031665,     1.0e-13);
     }
 
     #[test]
     fn test_odd_string_decoding() {
         let bits = GeohashBits::from_hash("u10hfr2c4pv");
         assert_eq!(bits.bits(), 0xd041075c4b2576);
-        assert_approx_eq!(bits.bounding_box().center().longitude,   0.100000128149986, 1.0e-13);
-        assert_approx_eq!(bits.bounding_box().center().latitude,  51.5000002831221,     1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().longitude, 0.100000128149986, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude, 51.5000002831221,   1.0e-13);
+    }
+
+    #[test]
+    fn test_even_binary_encoding() {
+        // match redis precision for comparison
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Bits(26));
+        // note redis always returns 11 character hashes "gcpuvxr1jz0",
+        // but we would need 55 bits for 11 characters and we only have 52 so we truncate at 10 characters
+        assert_eq!(bits.hash(), "gcpuvxr1jz");
+        assert_approx_eq!(bits.bounding_box().center().longitude, -0.10000079870223999, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude,  51.4999996125698,     1.0e-13);
+    }
+
+    #[test]
+    fn test_odd_binary_encoding() {
+        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Bits(25));
+        assert_eq!(bits.hash(), "gcpuvxr1jz");
+        assert_approx_eq!(bits.bounding_box().center().longitude, -0.0999981164932251, 1.0e-13);
+        assert_approx_eq!(bits.bounding_box().center().latitude,  51.4999982714653,    1.0e-13);
     }
 }
