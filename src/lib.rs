@@ -1,5 +1,7 @@
 use std::f64;
 use std::f64::MAX;
+use lazy_static::lazy_static;
+use std::collections::HashMap;
 
 pub struct Location {
     pub longitude: f64,
@@ -146,6 +148,16 @@ fn interleave_bits(even_bits: u32, odd_bits: u32) -> u64 {
 
 const BASE32_CHARACTERS: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 
+lazy_static! {
+    static ref BASE32_BITS: HashMap<char, u64> = {
+        let mut map = HashMap::new();
+        for (i, c) in BASE32_CHARACTERS.iter().enumerate() {
+            map.insert(char::from(*c), i as u64);
+        }
+        map
+    };
+}
+
 impl GeohashBits {
 
     pub fn from_location(location: &Location, precision: Precision) -> GeohashBits {
@@ -163,6 +175,18 @@ impl GeohashBits {
         }
     }
 
+    pub fn from_hash(hash: &str) -> GeohashBits {
+        let total_bit_length = 2 * (0.5 * 5.0 * hash.len() as f64).ceil() as u64;
+        let mut bits: u64 = 0;
+        for (i, c) in hash.chars().enumerate() {
+            bits |= (BASE32_BITS[&c] << (total_bit_length - 5 * (i as u64 + 1)));
+        }
+        GeohashBits {
+            bits,
+            precision: Precision::Characters(hash.len() as u8)
+        }
+    }
+
     pub fn hash(&self) -> String {
         let character_precision = character_precision(&self.precision);
         let total_binary_precision = 2 * binary_precision(&self.precision);
@@ -173,6 +197,10 @@ impl GeohashBits {
             hash.push(char::from(BASE32_CHARACTERS[index as usize]));
         }
         hash
+    }
+
+    pub fn bits(&self) -> u64 {
+        self.bits
     }
 }
 
@@ -261,5 +289,17 @@ mod tests {
     #[should_panic]
     fn test_invalid_angle() {
         let bits = GeohashBits::from_location(&Location {longitude: -200.0, latitude: 51.5}, Precision::Characters(11));
+    }
+
+    #[test]
+    fn test_even_string_decoding() {
+        let bits = GeohashBits::from_hash("u10hfr2c4pv6");
+        assert_eq!(bits.bits(), 0xd041075c4b25766);
+    }
+
+    #[test]
+    fn test_odd_string_decoding() {
+        let bits = GeohashBits::from_hash("u10hfr2c4pv");
+        assert_eq!(bits.bits(), 0xd041075c4b2576);
     }
 }
