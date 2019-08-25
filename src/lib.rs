@@ -1,5 +1,4 @@
 use std::f64;
-use std::f64::MAX;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 
@@ -19,9 +18,29 @@ pub enum Precision {
     Characters(u8)
 }
 
+#[derive(Clone, Copy)]
 pub struct GeohashBits {
     bits: u64,
     precision: Precision
+}
+
+pub enum Neighbor {
+    West,
+    East,
+    South,
+    North
+}
+
+pub struct GeohashIterator {
+    bounds: BoundingBox,
+    lat_baseline: GeohashBits,
+    current: Option<GeohashBits>
+}
+
+#[derive(PartialEq)]
+enum InterleaveSet {
+    Odds,
+    Evens
 }
 
 const RADIANS_PER_DEGREE: f64 = std::f64::consts::PI / 180.0;
@@ -94,25 +113,34 @@ impl BoundingBox {
     }
 }
 
+impl Precision {
+    pub fn binary_precision(&self) -> u8 {
+        match self {
+            &Precision::Bits(n) => n,
+            &Precision::Characters(n) => (0.5 * (5 * n) as f32).ceil() as u8
+        }
+    }
+
+    pub fn character_precision(&self) -> u8 {
+        match self {
+            &Precision::Bits(n) => (0.4 * n as f64) as u8,
+            &Precision::Characters(n) => n
+        }
+    }
+
+    pub fn max_binary_value(&self) -> f64 {
+        (1 << self.binary_precision() as u64) as f64
+    }
+
+    pub fn is_odd_characters(&self) -> bool {
+        match self {
+            &Precision::Bits(_) => false,
+            &Precision::Characters(n) => (n % 2) > 0
+        }
+    }
+}
+
 const MAX_BINARY_PRECISION: u8 = 32;
-
-fn binary_precision(precision: &Precision) -> u8 {
-    match precision {
-        &Precision::Bits(n) => n,
-        &Precision::Characters(n) => (0.5 * (5 * n) as f32).ceil() as u8
-    }
-}
-
-fn character_precision(precision: &Precision) -> u8 {
-    match precision {
-        &Precision::Bits(n) => (0.4 * n as f64) as u8,
-        &Precision::Characters(n) => n
-    }
-}
-
-fn max_binary_value(binary_precision: u8) -> f64 {
-    (1 << binary_precision as u64) as f64
-}
 
 fn float_to_bits(value: f64, range: &LocationRange, max_binary_value: f64) -> u32 {
     let fraction = (value - *range.start()) / (range.end() - range.start());
@@ -180,13 +208,29 @@ lazy_static! {
     };
 }
 
+impl InterleaveSet {
+    pub fn modify_mask(&self) -> u64 {
+        match self {
+            InterleaveSet::Evens => 0x5555555555555555,
+            InterleaveSet::Odds => 0xaaaaaaaaaaaaaaaa
+        }
+    }
+
+    pub fn keep_mask(&self) -> u64 {
+        match self {
+            InterleaveSet::Evens => 0xaaaaaaaaaaaaaaaa,
+            InterleaveSet::Odds => 0x5555555555555555
+        }
+    }
+}
+
 impl GeohashBits {
 
     pub fn from_location(location: &Location, precision: Precision) -> GeohashBits {
         location.validate_range();
-        let binary_precision = binary_precision(&precision);
+        let binary_precision = precision.binary_precision();
         assert!((1..=MAX_BINARY_PRECISION).contains(&binary_precision), "precision out of range");
-        let max_binary_value = max_binary_value(binary_precision);
+        let max_binary_value = precision.max_binary_value();
 
         let longitude_bits = float_to_bits(location.longitude, &LONGITUDE_RANGE, max_binary_value);
         let latitude_bits  = float_to_bits(location.latitude, &LATITUDE_RANGE, max_binary_value);
@@ -201,7 +245,7 @@ impl GeohashBits {
         let total_bit_length = 2 * (0.5 * 5.0 * hash.len() as f64).ceil() as u64;
         let mut bits: u64 = 0;
         for (i, c) in hash.chars().enumerate() {
-            bits |= (BASE32_BITS[&c] << (total_bit_length - 5 * (i as u64 + 1)));
+            bits |= BASE32_BITS[&c] << (total_bit_length - 5 * (i as u64 + 1));
         }
         GeohashBits {
             bits,
@@ -210,8 +254,8 @@ impl GeohashBits {
     }
 
     pub fn hash(&self) -> String {
-        let character_precision = character_precision(&self.precision);
-        let total_binary_precision = 2 * binary_precision(&self.precision);
+        let character_precision = self.precision.character_precision();
+        let total_binary_precision = 2 * self.precision.binary_precision();
         let mut hash = String::with_capacity(character_precision as usize);
         for i in 1..=character_precision {
             // each character is 5 bits
@@ -227,24 +271,107 @@ impl GeohashBits {
 
     pub fn bounding_box(&self) -> BoundingBox {
         let (mut lat_bits, lon_bits) = deinterleave_bits(self.bits);
-        let binary_precision = binary_precision(&self.precision);
-        let mut lat_precision = binary_precision;
-        if let Precision::Characters(_) = self.precision {
-            if (binary_precision % 5) > 0 {
-                lat_bits >>= 1;
-                lat_precision -= 1;
-            }
+        let mut lat_precision = self.precision;
+        if lat_precision.is_odd_characters() {
+            lat_bits >>= 1;
+            lat_precision = Precision::Bits(lat_precision.binary_precision() - 1);
         }
         BoundingBox {
             min: Location {
-                longitude: bits_to_float(lon_bits, &LONGITUDE_RANGE, max_binary_value(binary_precision)),
-                latitude:  bits_to_float(lat_bits, &LATITUDE_RANGE, max_binary_value(lat_precision))
+                longitude: bits_to_float(lon_bits, &LONGITUDE_RANGE, self.precision.max_binary_value()),
+                latitude:  bits_to_float(lat_bits, &LATITUDE_RANGE, lat_precision.max_binary_value())
             },
             max: Location {
-                longitude: bits_to_float(lon_bits + 1, &LONGITUDE_RANGE, max_binary_value(binary_precision)),
-                latitude:  bits_to_float(lat_bits + 1, &LATITUDE_RANGE, max_binary_value(lat_precision))
+                longitude: bits_to_float(lon_bits + 1, &LONGITUDE_RANGE, self.precision.max_binary_value()),
+                latitude:  bits_to_float(lat_bits + 1, &LATITUDE_RANGE, lat_precision.max_binary_value())
             },
         }
+    }
+
+    pub fn neighbor(&self, neighbor: &Neighbor) -> GeohashBits {
+        match neighbor {
+            Neighbor::North => self.incremented(InterleaveSet::Evens,  1),
+            Neighbor::South => self.incremented(InterleaveSet::Evens, -1),
+            Neighbor::East =>  self.incremented(InterleaveSet::Odds,   1),
+            Neighbor::West =>  self.incremented(InterleaveSet::Odds,  -1)
+        }
+    }
+
+    fn incremented(&self, set: InterleaveSet, direction: i32) -> GeohashBits {
+        if direction == 0 {
+            return GeohashBits {
+                bits: self.bits,
+                precision: self.precision
+            }
+        }
+        let mut modify_bits = self.bits & set.modify_mask();
+        let keep_bits = self.bits & set.keep_mask();
+        let binary_precision = self.precision.binary_precision() as u64;
+        let increment = set.keep_mask() >> (64 - 2 * binary_precision);
+        let shift_bits = InterleaveSet::Evens == set && self.precision.is_odd_characters();
+
+        if shift_bits {
+            modify_bits >>= 2;
+        }
+
+        if direction > 0 {
+            modify_bits += increment + 1;
+        }
+        else {
+            modify_bits |= increment;
+            modify_bits -= increment + 1;
+        }
+
+        if shift_bits {
+            modify_bits <<= 2;
+        }
+
+        modify_bits &= set.modify_mask() >> (64 - 2 * binary_precision);
+
+        GeohashBits {
+            bits: modify_bits | keep_bits,
+            precision: self.precision
+        }
+    }
+}
+
+impl GeohashIterator {
+    pub fn new(bounds: BoundingBox, bit_precision: u8) -> GeohashIterator {
+        let lat_baseline = GeohashBits::from_location(&bounds.min, Precision::Bits(bit_precision));
+        GeohashIterator {
+            bounds,
+            lat_baseline,
+            current: Some(lat_baseline)
+        }
+    }
+
+    fn advance_current(&mut self) {
+        // advance eastward until we are out of the bounds then advance northward
+        if let Some(bits) = self.current {
+            let bits = bits.neighbor(&Neighbor::East);
+            if self.bounds.intersects(&bits.bounding_box()) {
+                self.current = Some(bits);
+            }
+            else {
+                self.lat_baseline = self.lat_baseline.neighbor(&Neighbor::North);
+                if self.bounds.intersects(&self.lat_baseline.bounding_box()) {
+                    self.current = Some(self.lat_baseline);
+                }
+                else {
+                    self.current = Option::None;
+                }
+            }
+        }
+    }
+}
+
+impl std::iter::Iterator for GeohashIterator {
+    type Item = GeohashBits;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let value = self.current.clone();
+        self.advance_current();
+        value
     }
 }
 
@@ -255,6 +382,7 @@ mod tests {
     use crate::BoundingBox;
     use crate::Precision;
     use crate::GeohashBits;
+    use crate::GeohashIterator;
 
     #[test]
     fn test_distance() {
@@ -326,13 +454,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_encoding_too_long() {
-        let bits = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(13));
+        let _ = GeohashBits::from_location(&Location {longitude: -0.1, latitude: 51.5}, Precision::Characters(13));
     }
 
     #[test]
     #[should_panic]
     fn test_invalid_angle() {
-        let bits = GeohashBits::from_location(&Location {longitude: -200.0, latitude: 51.5}, Precision::Characters(11));
+        let _ = GeohashBits::from_location(&Location {longitude: -200.0, latitude: 51.5}, Precision::Characters(11));
     }
 
     #[test]
@@ -368,5 +496,19 @@ mod tests {
         assert_eq!(bits.hash(), "gcpuvxr1jz");
         assert_approx_eq!(bits.bounding_box().center().longitude, -0.0999981164932251, 1.0e-13);
         assert_approx_eq!(bits.bounding_box().center().latitude,  51.4999982714653,    1.0e-13);
+    }
+
+    #[test]
+    fn test_iterator() {
+        let bounds = BoundingBox::enclosing(
+            &Location {longitude: 0.09991, latitude: 51.49996},
+            &Location {longitude: 0.10059, latitude: 51.50028}
+        );
+        let mut iterator = GeohashIterator::new(bounds, 20);
+        assert_eq!(iterator.next().unwrap().hash(), "u10hfr2c");
+        assert_eq!(iterator.next().unwrap().hash(), "u10hfr31");
+        assert_eq!(iterator.next().unwrap().hash(), "u10hfr2f");
+        assert_eq!(iterator.next().unwrap().hash(), "u10hfr34");
+        assert!(iterator.next().is_none());
     }
 }
