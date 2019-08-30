@@ -142,6 +142,7 @@ impl Precision {
 
 const MAX_BINARY_PRECISION: u8 = 32;
 
+
 fn float_to_bits(value: f64, range: &LocationRange, max_binary_value: f64) -> u32 {
     let fraction = (value - *range.start()) / (range.end() - range.start());
     (fraction * max_binary_value) as u32
