@@ -1,6 +1,7 @@
 
 use crate::Location;
 
+#[derive(Clone, Copy)]
 pub struct BoundingBox {
     pub(crate) min: Location,
     pub(crate) max: Location

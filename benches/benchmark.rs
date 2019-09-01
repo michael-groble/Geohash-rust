@@ -4,9 +4,11 @@ extern crate geohash;
 
 #[bench]
 fn test_iteration(b: &mut test::Bencher) {
-    let parent = geohash::GeohashBits::from_hash("dp3");
+    let bounds = geohash::GeohashBits::from_hash("dp3").bounding_box();
+    let mut n = 0;
     b.iter(|| {
-        let iter = geohash::GeohashIterator::new(parent.bounding_box(), 16);
-        iter.count()
+        let iter = geohash::GeohashIterator::new(bounds, 16);
+        n = iter.count();
     });
+    assert_eq!(n, 131841)
 }
