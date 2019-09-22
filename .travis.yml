@@ -20,3 +20,7 @@ matrix:
   fast_finish: true
   allow_failures:
     - rust: nightly
+
+script:
+  - cargo +$TRAVIS_RUST_VERSION test --verbose
+  - if [[ "$TRAVIS_RUST_VERSION" == "nightly" ]]; then cargo +nightly test --verbose --features simd; fi

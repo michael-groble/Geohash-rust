@@ -3,6 +3,89 @@ use lazy_static::lazy_static;
 use std::collections::HashMap;
 use crate::*;
 
+#[cfg(feature = "simd")]
+mod ops {
+    use packed_simd::u64x2;
+
+    const ALTERNATING_1: u64x2 = u64x2::new(0x5555555555555555, 0x5555555555555555);
+    const ALTERNATING_2: u64x2 = u64x2::new(0x3333333333333333, 0x3333333333333333);
+    const ALTERNATING_4: u64x2 = u64x2::new(0x0F0F0F0F0F0F0F0F, 0x0F0F0F0F0F0F0F0F);
+    const ALTERNATING_8: u64x2 = u64x2::new(0x00FF00FF00FF00FF, 0x00FF00FF00FF00FF);
+    const ALTERNATING_16: u64x2 = u64x2::new(0x0000FFFF0000FFFF, 0x0000FFFF0000FFFF);
+    const ALTERNATING_32: u64x2 = u64x2::new(0x00000000FFFFFFFF, 0x00000000FFFFFFFF);
+
+    pub fn interleave_bits(even_bits: u32, odd_bits: u32) -> u64 {
+        let mut bits = u64x2::new(even_bits as u64, odd_bits as u64);
+
+        bits = (bits | (bits << 16)) & ALTERNATING_16;
+        bits = (bits | (bits << 8)) & ALTERNATING_8;
+        bits = (bits | (bits << 4)) & ALTERNATING_4;
+        bits = (bits | (bits << 2)) & ALTERNATING_2;
+        bits = (bits | (bits << 1)) & ALTERNATING_1;
+
+        bits.extract(0) | (bits.extract(1) << 1)
+    }
+
+    pub fn deinterleave_bits(interleaved: u64) -> (u32, u32) {
+        let mut bits = u64x2::new(interleaved, interleaved >> 1) & ALTERNATING_1;
+
+        bits = (bits | (bits >> 1)) & ALTERNATING_2;
+        bits = (bits | (bits >> 2)) & ALTERNATING_4;
+        bits = (bits | (bits >> 4)) & ALTERNATING_8;
+        bits = (bits | (bits >> 8)) & ALTERNATING_16;
+        bits = (bits | (bits >> 16)) & ALTERNATING_32;
+
+        (bits.extract(0) as u32, bits.extract(1) as u32)
+    }
+}
+
+#[cfg(not(feature = "simd"))]
+mod ops {
+    pub fn interleave_bits(even_bits: u32, odd_bits: u32) -> u64 {
+        let mut e = even_bits as u64;
+        let mut o = odd_bits as u64;
+
+        e = (e | (e << 16)) & 0x0000FFFF0000FFFF;
+        o = (o | (o << 16)) & 0x0000FFFF0000FFFF;
+
+        e = (e | (e <<  8)) & 0x00FF00FF00FF00FF;
+        o = (o | (o <<  8)) & 0x00FF00FF00FF00FF;
+
+        e = (e | (e <<  4)) & 0x0F0F0F0F0F0F0F0F;
+        o = (o | (o <<  4)) & 0x0F0F0F0F0F0F0F0F;
+
+        e = (e | (e <<  2)) & 0x3333333333333333;
+        o = (o | (o <<  2)) & 0x3333333333333333;
+
+        e = (e | (e <<  1)) & 0x5555555555555555;
+        o = (o | (o <<  1)) & 0x5555555555555555;
+
+        e | (o << 1)
+    }
+
+    pub fn deinterleave_bits(interleaved: u64) -> (u32, u32) {
+        let mut e = interleaved        & 0x5555555555555555;
+        let mut o = (interleaved >> 1) & 0x5555555555555555;
+
+        e = (e | (e >>  1)) & 0x3333333333333333;
+        o = (o | (o >>  1)) & 0x3333333333333333;
+
+        e = (e | (e >>  2)) & 0x0F0F0F0F0F0F0F0F;
+        o = (o | (o >>  2)) & 0x0F0F0F0F0F0F0F0F;
+
+        e = (e | (e >>  4)) & 0x00FF00FF00FF00FF;
+        o = (o | (o >>  4)) & 0x00FF00FF00FF00FF;
+
+        e = (e | (e >>  8)) & 0x0000FFFF0000FFFF;
+        o = (o | (o >>  8)) & 0x0000FFFF0000FFFF;
+
+        e = (e | (e >> 16)) & 0x00000000FFFFFFFF;
+        o = (o | (o >> 16)) & 0x00000000FFFFFFFF;
+
+        (e as u32, o as u32)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Precision {
     Bits(u8),
@@ -61,50 +144,6 @@ fn bits_to_float(bits: u32, range: &LocationRange, max_binary_value: f64) -> f64
     *range.start() + fraction * (range.end() - range.start())
 }
 
-fn interleave_bits(even_bits: u32, odd_bits: u32) -> u64 {
-    let mut e = even_bits as u64;
-    let mut o = odd_bits as u64;
-
-    e = (e | (e << 16)) & 0x0000FFFF0000FFFF;
-    o = (o | (o << 16)) & 0x0000FFFF0000FFFF;
-
-    e = (e | (e <<  8)) & 0x00FF00FF00FF00FF;
-    o = (o | (o <<  8)) & 0x00FF00FF00FF00FF;
-
-    e = (e | (e <<  4)) & 0x0F0F0F0F0F0F0F0F;
-    o = (o | (o <<  4)) & 0x0F0F0F0F0F0F0F0F;
-
-    e = (e | (e <<  2)) & 0x3333333333333333;
-    o = (o | (o <<  2)) & 0x3333333333333333;
-
-    e = (e | (e <<  1)) & 0x5555555555555555;
-    o = (o | (o <<  1)) & 0x5555555555555555;
-
-    e | (o << 1)
-}
-
-fn deinterleave_bits(interleaved: u64) -> (u32, u32) {
-    let mut e = interleaved        & 0x5555555555555555;
-    let mut o = (interleaved >> 1) & 0x5555555555555555;
-
-    e = (e | (e >>  1)) & 0x3333333333333333;
-    o = (o | (o >>  1)) & 0x3333333333333333;
-
-    e = (e | (e >>  2)) & 0x0F0F0F0F0F0F0F0F;
-    o = (o | (o >>  2)) & 0x0F0F0F0F0F0F0F0F;
-
-    e = (e | (e >>  4)) & 0x00FF00FF00FF00FF;
-    o = (o | (o >>  4)) & 0x00FF00FF00FF00FF;
-
-    e = (e | (e >>  8)) & 0x0000FFFF0000FFFF;
-    o = (o | (o >>  8)) & 0x0000FFFF0000FFFF;
-
-    e = (e | (e >> 16)) & 0x00000000FFFFFFFF;
-    o = (o | (o >> 16)) & 0x00000000FFFFFFFF;
-
-    (e as u32, o as u32)
-}
-
 const BASE32_CHARACTERS: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 
 lazy_static! {
@@ -145,7 +184,7 @@ impl GeohashBits {
         let latitude_bits  = float_to_bits(location.latitude, &LATITUDE_RANGE, max_binary_value);
 
         GeohashBits {
-            bits: interleave_bits(latitude_bits, longitude_bits),
+            bits: ops::interleave_bits(latitude_bits, longitude_bits),
             precision
         }
     }
@@ -179,7 +218,7 @@ impl GeohashBits {
     }
 
     pub fn bounding_box(&self) -> BoundingBox {
-        let (mut lat_bits, lon_bits) = deinterleave_bits(self.bits);
+        let (mut lat_bits, lon_bits) = ops::deinterleave_bits(self.bits);
         let mut lat_precision = self.precision;
         if lat_precision.is_odd_characters() {
             lat_bits >>= 1;
