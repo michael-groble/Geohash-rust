@@ -1,6 +1,6 @@
 #![feature(test)]
-extern crate test;
 extern crate geohash;
+extern crate test;
 
 #[bench]
 fn test_iteration(b: &mut test::Bencher) {

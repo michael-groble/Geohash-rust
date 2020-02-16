@@ -7,7 +7,7 @@ pub mod bounding_box;
 pub use self::bounding_box::BoundingBox;
 
 pub mod geohash_bits;
-pub use self::geohash_bits::{Precision, GeohashBits};
+pub use self::geohash_bits::{GeohashBits, Precision};
 
 pub mod geohash_iterator;
 pub use self::geohash_iterator::GeohashIterator;
@@ -20,5 +20,5 @@ pub enum Neighbor {
     West,
     East,
     South,
-    North
+    North,
 }

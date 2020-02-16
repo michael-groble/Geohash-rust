@@ -3,16 +3,17 @@ use crate::*;
 pub struct GeohashIterator {
     bounds: BoundingBox,
     lat_baseline: GeohashBits,
-    current: Option<GeohashBits>
+    current: Option<GeohashBits>,
 }
 
 impl GeohashIterator {
     pub fn new(bounds: BoundingBox, bit_precision: u8) -> GeohashIterator {
-        let lat_baseline = GeohashBits::from_location(&bounds.min(), Precision::Bits(bit_precision));
+        let lat_baseline =
+            GeohashBits::from_location(&bounds.min(), Precision::Bits(bit_precision));
         GeohashIterator {
             bounds,
             lat_baseline,
-            current: Some(lat_baseline)
+            current: Some(lat_baseline),
         }
     }
 
@@ -22,13 +23,11 @@ impl GeohashIterator {
             let bits = bits.neighbor(&Neighbor::East);
             if self.bounds.intersects(&bits.bounding_box()) {
                 self.current = Some(bits);
-            }
-            else {
+            } else {
                 self.lat_baseline = self.lat_baseline.neighbor(&Neighbor::North);
                 if self.bounds.intersects(&self.lat_baseline.bounding_box()) {
                     self.current = Some(self.lat_baseline);
-                }
-                else {
+                } else {
                     self.current = Option::None;
                 }
             }
@@ -48,16 +47,23 @@ impl std::iter::Iterator for GeohashIterator {
 
 #[cfg(test)]
 mod tests {
-    use crate::Location;
     use crate::BoundingBox;
     use crate::GeohashIterator;
+    use crate::Location;
 
     #[test]
     fn test_iterator() {
-        let bounds = BoundingBox::enclosing(
-            &Location {longitude: 0.09991, latitude: 51.49996},
-            &Location {longitude: 0.10059, latitude: 51.50028}
-        );
+        let bounds = BoundingBox::enclosing(vec![
+            Location {
+                longitude: 0.09991,
+                latitude: 51.49996,
+            },
+            Location {
+                longitude: 0.10059,
+                latitude: 51.50028,
+            },
+        ])
+        .unwrap();
         let mut iterator = GeohashIterator::new(bounds, 20);
         assert_eq!(iterator.next().unwrap().hash(), "u10hfr2c");
         assert_eq!(iterator.next().unwrap().hash(), "u10hfr31");
